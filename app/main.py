@@ -109,10 +109,10 @@ def main():
         try:
             client, address = server.accept()
             print(f"[+] Connection from {address}")
-            while True:
+            # while True:
                 # handle_client(client) # This does not support concurrent requests, using threading to solve the issue
-                t = threading.Thread(target=respond, args=(client,))
-                t.start()
+            t = threading.Thread(target=respond, args=(client,))
+            t.start()
         except KeyboardInterrupt:
             print("\n[!] Shutting down server.")
             server.close()
