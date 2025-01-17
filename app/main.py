@@ -97,6 +97,9 @@ def handle_client(client: socket.socket):
         # client.close()
         print("Client not closed as this lets us handle sequential requests")
 
+def respond(client: socket.socket):
+    while True:
+        handle_client(client)
 
 def main():
     print("Server starting on localhost:9092...")
@@ -108,7 +111,7 @@ def main():
             print(f"[+] Connection from {address}")
             while True:
                 # handle_client(client) # This does not support concurrent requests, using threading to solve the issue
-                t = threading.Thread(target=handle_client, args=(client,))
+                t = threading.Thread(target=respond, args=(client,))
                 t.start()
         except KeyboardInterrupt:
             print("\n[!] Shutting down server.")
