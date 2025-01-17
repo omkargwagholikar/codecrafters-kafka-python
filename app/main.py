@@ -1,5 +1,5 @@
 import socket
-import struct  # noqa: F401
+import struct
 from enum import Enum, unique
 
 #core message sizes:
@@ -23,7 +23,7 @@ correlation_id_size = 4
 error_code_size = 2
 min_version_size = 2
 max_version_size = 2
-TAG_BUFFER_size = 2
+TAG_BUFFER_size = 1  # Compact array tagging is typically 1 byte
 throttle_time_ms_size = 4
 
 @unique
@@ -33,82 +33,85 @@ class ErrorCode(Enum):
     INVALID_REQUEST = 37
 
 class Message:
-    body: dict[str, int | str]
-    header: bytes
-    size: int
-    error_code: ErrorCode
-    tagged_fields: str
-    throttle_time_ms: int
-
-    def __init__(self, header:bytes, body:bytes):
+    def __init__(self, header: bytes, body: bytes):
+        # Parse the message directly from the header instead of body
         self.header = header
-        self.size = len(header) + len(body)
-        self.body = self.parse_request(body)
-        self.error_code = ErrorCode.NONE if 0 <= self.body["api_version"] <= 4 else ErrorCode.UNSUPPORTED_VERSION
-    
-    def parse_request(self, request: bytes) -> dict[str, int | str]:
-        buff_size = struct.calcsize(">ihhi") # here the > is for big endian, i is for integer, h is for short integer, and the last i is for integer
-        length, api_key, api_version, correlation_id = struct.unpack(
-            ">ihhi", request[0:buff_size]
+        self.body = body
+        
+        # Extract fields from header (similar to correct implementation)
+        self.request_api_key = int.from_bytes(header[:2], byteorder="big")
+        self.request_api_version = int.from_bytes(header[2:4], byteorder="big")
+        self.correlation_id = int.from_bytes(header[4:8], byteorder="big")
+        self.client_id = int.from_bytes(header[8:], byteorder="big") if len(header) > 8 else 0
+        
+        self.error_code = (
+            ErrorCode.NONE
+            if 0 <= self.request_api_version <= 4
+            else ErrorCode.UNSUPPORTED_VERSION
         )
-        return {
-            "length": length,
-            "api_key": api_key,
-            "api_version": api_version,
-            "correlation_id": correlation_id,
-        }
-    
+        if self.error_code is ErrorCode.UNSUPPORTED_VERSION:
+            print(f"[-] Unsupported version: {self.request_api_version}")
+
     def create_message_apiversion(self) -> bytes:
-        # # ApiVersion V3 Response Body | Ref.: https://kafka.apache.org/protocol.html#The_Messages_ApiVersions
-        # # error_code [api_keys] throttle_time_ms TAG_BUFFER
-        # # error_code INT16# num_api_keys => empirically VARINT of N + 1 for COMPACT_ARRAY
-        # # 255 / 11111111 => 126
-        # # 127 / 01111111 => 126
-        # #  63 / 00111111 =>  62
-        # # api_key INT16
-        # # min_version INT16
-        # # max_version INT16
-        # # TAG_BUFFER -> empirically INT16
-        # # throttle_time_ms INT32
-        min_version, max_version = 0, 4
-        throttle_time_ms = 0
-        tag_buffer = b"\x00"
+        # Create response message following the correct format
+        response_header = self.correlation_id.to_bytes(4, byteorder="big")
+        
         response_body = (
-            self.error_code.value.to_bytes(2, byteorder="big")
-            + int(2).to_bytes(1, byteorder="big")
-            + self.body["api_key"].to_bytes(2, byteorder='big')
-            + min_version.to_bytes(2, byteorder="big")
-            + max_version.to_bytes(2, byteorder="big")
-            + tag_buffer
-            + throttle_time_ms.to_bytes(4, byteorder='big')
-            + tag_buffer
+            self.error_code.value.to_bytes(2, byteorder="big")  # error_code
+            + (2).to_bytes(1, byteorder="big")  # num_api_keys (1 + 1)
+            + (18).to_bytes(2, byteorder="big")  # api_key
+            + (0).to_bytes(2, byteorder="big")   # min_version
+            + (4).to_bytes(2, byteorder="big")   # max_version
+            + (0).to_bytes(2, byteorder="big")   # TAG_BUFFER
+            + (0).to_bytes(4, byteorder="big")   # throttle_time_ms
         )
         
-        response_length = len(self.header) + len(response_body)
-        return int(response_length).to_bytes(4, byteorder='big') + self.header + response_body
+        # Calculate total size and create final message
+        total_size = len(response_header) + len(response_body)
+        return total_size.to_bytes(4, byteorder="big") + response_header + response_body
 
-    
-def handle_client(client):
-    request = client.recv(1024) # reading the first 1024 bytes sent by the client, this is a placeholder value for now
-    print(f"[+] Recieved: {request}")
-    
-    message = Message(request[:4], request[4:])
-    print(f"[+] Received correlation_id: {message.body['correlation_id']}")
+def handle_client(client: socket.socket):
+    try:
+        data = client.recv(1024)
+        if not data:
+            print("[-] No data received")
+            return
 
-    response = message.create_message_apiversion()
-    
-    client.sendall(response)
-    client.close()
+        print(f"[+] Received: {data.hex()}")
+        
+        # The first 4 bytes are the size, then header starts
+        message_size = int.from_bytes(data[:4], byteorder="big")
+        header = data[4:16]  # Header is 12 bytes: api_key(2) + version(2) + correlation_id(4) + client_id(4)
+        body = data[16:]
+        
+        message = Message(header, body)
+        print(f"[+] Received correlation_id: {message.correlation_id}")
+        
+        response = message.create_message_apiversion()
+        print(f"[+] Sending response: {response.hex()}")
+        client.sendall(response)
+
+    except Exception as e:
+        print(f"[-] Error: {e}")
+    finally:
+        client.close()
 
 
 def main():
-    print("Logs from your program will appear here!")
-
+    print("Server starting on localhost:9092...")
     server = socket.create_server(("localhost", 9092), reuse_port=True)
     
     while True:
-        client, addrs = server.accept()
-        handle_client(client)
+        try:
+            client, address = server.accept()
+            print(f"[+] Connection from {address}")
+            handle_client(client)
+        except KeyboardInterrupt:
+            print("\n[!] Shutting down server.")
+            server.close()
+            break
+        except Exception as e:
+            print(f"[-] Unexpected error: {e}")
 
 if __name__ == "__main__":
     main()
