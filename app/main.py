@@ -17,14 +17,26 @@ from enum import Enum, unique
 # echo -n "000000230012674a4f74d28b00096b61666b612d636c69000a6b61666b612d636c6904302e3100" | xxd -r -p | nc localhost 9092 | hexdump -C
 
 # Sizes in bytes
-request_api_key_size = 2
-request_api_version_size = 2
-correlation_id_size = 4
-error_code_size = 2
-min_version_size = 2
-max_version_size = 2
-TAG_BUFFER_size = 1  # Compact array tagging is typically 1 byte
-throttle_time_ms_size = 4
+REQUEST_API_KEY_SIZE = 2
+REQUEST_API_VERSION_SIZE = 2
+CORRELATION_ID_SIZE = 4
+ERROR_CODE_SIZE = 2
+MIN_VERSION_SIZE = 2
+MAX_VERSION_SIZE = 2
+MIN_FETCH_SIZE = 2
+MAX_FETCH_SIZE = 2
+TAG_BUFFER_SIZE = 1  # Compact array tagging is typically 1 byte
+THROTTLE_TIME_MS_SIZE = 4
+FETCH_SIZE = 2
+
+API_VERSION = 18
+FETCH = 1
+MAX_API_VERSION = 0
+MIN_API_VERSION = 4
+MIN_FETCH_VERSION = 0
+MAX_FETCH_VERSION = 16
+TAG_BUFFER = 0
+THROTTLE_TIME_MS = 0
 
 @unique
 class ErrorCode(Enum):
@@ -52,6 +64,7 @@ class Message:
         if self.error_code is ErrorCode.UNSUPPORTED_VERSION:
             print(f"[-] Unsupported version: {self.request_api_version}")
 
+
     def create_message_apiversion(self) -> bytes:
         # Create response message following the correct format
         response_header = self.correlation_id.to_bytes(4, byteorder="big")
@@ -64,6 +77,33 @@ class Message:
             + (4).to_bytes(2, byteorder="big")   # max_version
             + (0).to_bytes(2, byteorder="big")   # TAG_BUFFER
             + (0).to_bytes(4, byteorder="big")   # throttle_time_ms
+        )
+        
+        # Calculate total size and create final message
+        total_size = len(response_header) + len(response_body)
+        return total_size.to_bytes(4, byteorder="big") + response_header + response_body
+    
+    def create_message_fetch(self) -> bytes:
+        # Create response message following the correct format
+        response_header = self.correlation_id.to_bytes(4, byteorder="big")
+        
+        response_body = (
+            
+            self.error_code.value.to_bytes(2, byteorder="big")  # error_code
+            + (3).to_bytes(1, byteorder="big")  # num_api_keys (N + 1)
+            
+            + API_VERSION.to_bytes(REQUEST_API_VERSION_SIZE, byteorder="big")  # api_key
+            + MIN_API_VERSION.to_bytes(MIN_VERSION_SIZE, byteorder="big")   # min_version
+            + MAX_API_VERSION.to_bytes(MAX_VERSION_SIZE, byteorder="big")   # max_version
+            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
+            
+            + FETCH.to_bytes(FETCH_SIZE, byteorder="big", signed=True)
+            + MIN_FETCH_VERSION.to_bytes(MIN_FETCH_SIZE, byteorder="big", signed=True)
+            + MAX_FETCH_VERSION.to_bytes(MAX_FETCH_SIZE, byteorder="big", signed=True)
+            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
+
+            + THROTTLE_TIME_MS.to_bytes(THROTTLE_TIME_MS_SIZE, byteorder="big")   # throttle_time_ms
+            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
         )
         
         # Calculate total size and create final message
@@ -87,7 +127,7 @@ def handle_client(client: socket.socket):
         message = Message(header, body)
         print(f"[+] Received correlation_id: {message.correlation_id}")
         
-        response = message.create_message_apiversion()
+        response = message.create_message_fetch()
         print(f"[+] Sending response: {response.hex()}")
         client.sendall(response)
 
@@ -109,8 +149,7 @@ def main():
         try:
             client, address = server.accept()
             print(f"[+] Connection from {address}")
-            # while True:
-                # handle_client(client) # This does not support concurrent requests, using threading to solve the issue
+            # Using threading to handle multiple concurrent clients
             t = threading.Thread(target=respond, args=(client,))
             t.start()
         except KeyboardInterrupt:
