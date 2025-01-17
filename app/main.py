@@ -106,7 +106,8 @@ def main():
         try:
             client, address = server.accept()
             print(f"[+] Connection from {address}")
-            handle_client(client)
+            while True:
+                handle_client(client)
         except KeyboardInterrupt:
             print("\n[!] Shutting down server.")
             server.close()
