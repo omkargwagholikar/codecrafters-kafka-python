@@ -29,7 +29,7 @@ TAG_BUFFER_SIZE = 1  # Compact array tagging is typically 1 byte
 THROTTLE_TIME_MS_SIZE = 4
 FETCH_SIZE = 2
 
-API_VERSION = 18
+VERSIONS = 18
 FETCH = 1
 MIN_API_VERSION = 0
 MAX_API_VERSION = 4
@@ -50,96 +50,100 @@ class Message:
         self.header = header
         self.body = body
         
-        # Extract fields from header (similar to correct implementation)
         self.request_api_key = int.from_bytes(header[:2], byteorder="big")
         self.request_api_version = int.from_bytes(header[2:4], byteorder="big")
-        self.correlation_id = int.from_bytes(header[4:8], byteorder="big")
+        self.correlation_id = int.from_bytes(header[4:8], byteorder="big", signed=True)  # Changed to signed=True
         self.client_id = int.from_bytes(header[8:], byteorder="big") if len(header) > 8 else 0
         
         self.error_code = (
             ErrorCode.NONE
-            if 0 <= self.request_api_version <= 4
+            if 0 <= self.request_api_version <= 18
             else ErrorCode.UNSUPPORTED_VERSION
         )
         if self.error_code is ErrorCode.UNSUPPORTED_VERSION:
             print(f"[-] Unsupported version: {self.request_api_version}")
-
-
-    def create_message_apiversion(self) -> bytes:
-        # Create response message following the correct format
-        response_header = self.correlation_id.to_bytes(4, byteorder="big")
-        
-        response_body = (
-            self.error_code.value.to_bytes(2, byteorder="big")  # error_code
-            + (2).to_bytes(1, byteorder="big")  # num_api_keys (1 + 1)
-            + (18).to_bytes(2, byteorder="big")  # api_key
-            + (0).to_bytes(2, byteorder="big")   # min_version
-            + (4).to_bytes(2, byteorder="big")   # max_version
-            + (0).to_bytes(2, byteorder="big")   # TAG_BUFFER
-            + (0).to_bytes(4, byteorder="big")   # throttle_time_ms
-        )
-        
-        # Calculate total size and create final message
-        total_size = len(response_header) + len(response_body)
-        return total_size.to_bytes(4, byteorder="big") + response_header + response_body
     
-    def create_message_fetch(self) -> bytes:
-        # Create response message following the correct format
-        response_header = self.correlation_id.to_bytes(4, byteorder="big")
+    def api_key_entry(self, api_type: int, min_version: int, max_version: int) -> bytes:
+        # Simplified to match working implementation
+        return api_type.to_bytes(2, byteorder="big") + min_version.to_bytes(2, byteorder="big") + max_version.to_bytes(2, byteorder="big") + b"\x00"
+    
+    def create_response_versions(self) -> bytes:
+        response_header = self.correlation_id.to_bytes(4, byteorder="big", signed=True)
         
-        response_body = (
-            
-            self.error_code.value.to_bytes(2, byteorder="big")  # error_code
-            + (3).to_bytes(1, byteorder="big")  # num_api_keys (N + 1)
-            
-            + API_VERSION.to_bytes(REQUEST_API_VERSION_SIZE, byteorder="big")  # api_key
-            + MIN_API_VERSION.to_bytes(MIN_VERSION_SIZE, byteorder="big")   # min_version
-            + MAX_API_VERSION.to_bytes(MAX_VERSION_SIZE, byteorder="big")   # max_version
-            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
-            
-            + FETCH.to_bytes(FETCH_SIZE, byteorder="big", signed=True)
-            + MIN_FETCH_VERSION.to_bytes(MIN_FETCH_SIZE, byteorder="big", signed=True)
-            + MAX_FETCH_VERSION.to_bytes(MAX_FETCH_SIZE, byteorder="big", signed=True)
-            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
-
-            + THROTTLE_TIME_MS.to_bytes(THROTTLE_TIME_MS_SIZE, byteorder="big")   # throttle_time_ms
-            + TAG_BUFFER.to_bytes(TAG_BUFFER_SIZE, byteorder="big")   # TAG_BUFFER
+        print(
+            f"api_key: {self.request_api_key}, error_code: {self.error_code}, correlation_id: {self.correlation_id}"
         )
+        response_body = (
+            self.error_code.value.to_bytes(2, byteorder="big")  # error_code
+            + int(3).to_bytes(1, byteorder="big")
+            + self.api_key_entry(VERSIONS, 0, 4)
+            + self.api_key_entry(FETCH, 0, 16)
+            + THROTTLE_TIME_MS.to_bytes(4, byteorder="big")
+            + b"\x00"  # tag_buffer
+        )
+        response_len = len(response_header) + len(response_body)
+        return response_len.to_bytes(4, byteorder="big") + response_header + response_body
+    
+    def create_response_fetch(self) -> bytes:
+        response_header = self.correlation_id.to_bytes(4, byteorder="big", signed=True)
+        session_id = 0
+        responses = []
         
-        # Calculate total size and create final message
-        total_size = len(response_header) + len(response_body)
-        return total_size.to_bytes(4, byteorder="big") + response_header + response_body
+        print(
+            f"api_key: {self.request_api_key}, error_code: {self.error_code}, correlation_id: {self.correlation_id}"
+        )
+        response_body = (
+            THROTTLE_TIME_MS.to_bytes(4, byteorder="big")   # throttle_time_ms
+            + self.error_code.value.to_bytes(2, byteorder="big")  # error_code
+            + session_id.to_bytes(4, byteorder="big")
+            + b"\x00"  # tag_buffer
+            + int(len(responses) + 1).to_bytes(1, byteorder="big")
+            + b"\x00"  # tag_buffer
+        )
+        response_len = len(response_header) + len(response_body)
+        return response_len.to_bytes(4, byteorder="big") + response_header + response_body
+    
+    def create_message(self) -> bytes:        
+        try:
+            if self.request_api_key == FETCH:
+                response = self.create_response_fetch()
+            elif self.request_api_key == VERSIONS:
+                response = self.create_response_versions()
+            else:
+                raise Exception("[-] Invalid request")
+            
+            return response
+        except Exception as e:
+            print(f"[-] Error: {e}")
 
 def handle_client(client: socket.socket):
-    try:
-        data = client.recv(1024)
-        if not data:
-            print("[-] No data received")
-            return
-
-        print(f"[+] Received: {data.hex()}")
-        
-        # The first 4 bytes are the size, then header starts
-        message_size = int.from_bytes(data[:4], byteorder="big")
-        header = data[4:16]  # Header is 12 bytes: api_key(2) + version(2) + correlation_id(4) + client_id(4)
-        body = data[16:]
-        
-        message = Message(header, body)
-        print(f"[+] Received correlation_id: {message.correlation_id}")
-        
-        response = message.create_message_fetch()
-        print(f"[+] Sending response: {response.hex()}")
-        client.sendall(response)
-
-    except Exception as e:
-        print(f"[-] Error: {e}")
-    finally:
-        # client.close()
-        print("Client not closed as this lets us handle sequential requests")
-
-def respond(client: socket.socket):
     while True:
-        handle_client(client)
+        try:
+            data = client.recv(1024)
+            if not data:
+                print("[-] No data received")
+                return
+
+            print(f"[+] Received: {data.hex()}")
+            
+            # The first 4 bytes are the size, then header starts
+            message_size = int.from_bytes(data[:4], byteorder="big")
+            header = data[4:16]  # Header is 12 bytes: api_key(2) + version(2) + correlation_id(4) + client_id(4)
+            body = data[16:]
+            
+            message = Message(header, body)
+            print(f"[+] Received correlation_id: {message.correlation_id}")
+            
+            response = message.create_message()
+            print(f"[+] Sending response: {response.hex()}")
+            client.sendall(response)
+
+        except Exception as e:
+            print(f"[-] Error: {e}")
+            break
+    
+    print("Client disconnected")
+    client.close()
 
 def main():
     print("Server starting on localhost:9092...")
@@ -150,8 +154,8 @@ def main():
             client, address = server.accept()
             print(f"[+] Connection from {address}")
             # Using threading to handle multiple concurrent clients
-            t = threading.Thread(target=respond, args=(client,))
-            t.start()
+            client_thread = threading.Thread(target=handle_client, args=(client,))
+            client_thread.start()
         except KeyboardInterrupt:
             print("\n[!] Shutting down server.")
             server.close()
