@@ -1,5 +1,5 @@
 import socket
-import struct
+import threading
 from enum import Enum, unique
 
 #core message sizes:
@@ -107,7 +107,9 @@ def main():
             client, address = server.accept()
             print(f"[+] Connection from {address}")
             while True:
-                handle_client(client)
+                # handle_client(client) # This does not support concurrent requests, using threading to solve the issue
+                t = threading.Thread(target=handle_client, args=(client,))
+                t.start()
         except KeyboardInterrupt:
             print("\n[!] Shutting down server.")
             server.close()
