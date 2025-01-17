@@ -94,7 +94,8 @@ def handle_client(client: socket.socket):
     except Exception as e:
         print(f"[-] Error: {e}")
     finally:
-        client.close()
+        # client.close()
+        print("Client not closed as this lets us handle sequential requests")
 
 
 def main():
